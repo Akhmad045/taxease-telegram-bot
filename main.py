@@ -13,6 +13,7 @@ from telegram.ext import (
 
 from pajak import hitung_pph21_bulanan, hitung_pph21_tahunan, hitung_pph_badan
 from pdf_generator import buat_pdf_pajak
+from database import init_db, simpan_riwayat, ambil_riwayat, ambil_satu, hapus_riwayat
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -258,9 +259,53 @@ async def _tampilkan_menu(target, edit=False):
         )
 
 
+def _buat_ringkasan(jenis, hasil):
+    """Membuat teks ringkas satu baris untuk daftar riwayat."""
+    if jenis == 'pph21_bulanan':
+        return f"PPh 21 bulanan: {_rupiah(hasil.get('pph_bulanan', 0))}"
+    if jenis == 'pph21_tahunan':
+        return f"PPh terutang: {_rupiah(hasil.get('pph_terutang', 0))}"
+    if jenis == 'pph_badan':
+        return f"PPh terutang: {_rupiah(hasil.get('pph_terutang', 0))}"
+    return "-"
+
+
+def _buat_keterangan(jenis, hasil):
+    """Membuat keterangan tambahan (PTKP, status pegawai, skema) untuk riwayat."""
+    if jenis == 'pph21_bulanan':
+        bagian = []
+        if hasil.get('status_pegawai'):
+            bagian.append(hasil['status_pegawai'])
+        if hasil.get('ptkp'):
+            bagian.append(f"PTKP {hasil['ptkp']}")
+        return " • ".join(bagian) or None
+    if jenis == 'pph21_tahunan':
+        return f"PTKP {hasil['ptkp']}" if hasil.get('ptkp') else None
+    if jenis == 'pph_badan':
+        return hasil.get('skema') or None
+    return None
+
+
 async def _kirim_hasil(update, context, jenis, hasil, teks_hasil):
     """Menyimpan hasil terakhir dan mengirim pesan hasil + tombol aksi."""
     context.user_data['last_result'] = {'jenis': jenis, 'hasil': hasil}
+
+    # Simpan ke database agar tersedia di menu Riwayat (Fase 4).
+    try:
+        ringkasan = _buat_ringkasan(jenis, hasil)
+        simpan_riwayat(
+            user_id=update.effective_user.id,
+            jenis=jenis,
+            hasil=hasil,
+            ringkasan=ringkasan,
+            nama=hasil.get('nama'),
+            keterangan=_buat_keterangan(jenis, hasil),
+        )
+        context.user_data['riwayat_tersimpan'] = ringkasan
+    except Exception as e:  # noqa: BLE001 - jangan sampai gagal simpan mematikan bot
+        print(f"[WARN] gagal menyimpan riwayat: {e!r}")
+        context.user_data['riwayat_tersimpan'] = None
+
     await update.effective_message.reply_text(
         teks_hasil,
         parse_mode='Markdown',
@@ -347,11 +392,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:  # noqa: BLE001 - pesan lama tanpa teks/konten
             await _tampilkan_menu(query.message)
     elif query.data == 'riwayat':
+        await tampilkan_riwayat(update, context)
+    elif query.data == 'riwayat_hapus':
+        user_id = query.from_user.id
+        jumlah = hapus_riwayat(user_id)
         await query.edit_message_text(
-            text="Anda memilih *Riwayat*. (Fitur ini akan diimplementasikan di Fase 4)",
-            parse_mode='Markdown',
+            text=f"🗑️ {jumlah} riwayat Anda telah dihapus.\n\nKetik /start untuk menu utama.",
             reply_markup=MENU_KEYBOARD,
         )
+    elif query.data.startswith('riwayat_lihat_'):
+        await lihat_detail_riwayat(update, context)
     elif query.data == 'bantuan':
         await query.edit_message_text(
             text=BANTUAN_TEKS,
@@ -360,6 +410,97 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif query.data == 'download_pdf':
         await kirim_pdf(update, context)
+
+
+async def tampilkan_riwayat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan riwayat perhitungan milik user yang menekan tombol."""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    try:
+        daftar = ambil_riwayat(user_id, limit=10)
+    except Exception as e:  # noqa: BLE001
+        await query.edit_message_text(
+            text=f"⚠️ Gagal membaca riwayat: {e}",
+            reply_markup=MENU_KEYBOARD,
+        )
+        return
+
+    if not daftar:
+        await query.edit_message_text(
+            text=(
+                "*📋 Riwayat Perhitungan*\n\n"
+                "Belum ada riwayat. Silakan lakukan perhitungan terlebih dahulu "
+                "lewat menu utama."
+            ),
+            parse_mode='Markdown',
+            reply_markup=MENU_KEYBOARD,
+        )
+        return
+
+    baris = ["*📋 Riwayat Perhitungan Anda*", f"_Menampilkan {len(daftar)} data terakhir_", ""]
+    tombol = []
+    for item in daftar:
+        tanggal = (item['created_at'] or "").replace("T", " ")
+        nama = item['nama'] or "(tanpa nama)"
+        baris.append(
+            f"*{item['id']}. {item['jenis_label']}* — {nama}\n"
+            f"   {item['ringkasan']}\n"
+            f"   _{tanggal}_"
+        )
+        tombol.append([
+            InlineKeyboardButton(
+                f"#{item['id']} {item['jenis_label']}",
+                callback_data=f"riwayat_lihat_{item['id']}",
+            )
+        ])
+
+    tombol.append([InlineKeyboardButton("Hapus Semua Riwayat 🗑️", callback_data='riwayat_hapus')])
+    tombol.append([InlineKeyboardButton("Kembali ke Menu 🏠", callback_data='menu_utama')])
+
+    await query.edit_message_text(
+        text="\n\n".join(baris),
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(tombol),
+    )
+
+
+async def lihat_detail_riwayat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan detail satu riwayat (hanya milik user tersebut)."""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    try:
+        riwayat_id = int(query.data.replace('riwayat_lihat_', '', 1))
+    except ValueError:
+        await query.answer("Data riwayat tidak valid.", show_alert=True)
+        return
+
+    item = ambil_satu(user_id, riwayat_id)
+    if item is None:
+        await query.answer("Riwayat tidak ditemukan.", show_alert=True)
+        return
+
+    context.user_data['last_result'] = {
+        'jenis': item['jenis'],
+        'hasil': item['hasil'],
+    }
+
+    tanggal = (item['created_at'] or "").replace("T", " ")
+    teks = (
+        f"*📄 Detail Riwayat #{item['id']}*\n"
+        "──────────────────────────\n"
+        f"*Jenis:* {item['jenis_label']}\n"
+        f"*Nama:* {item['nama'] or '-'}\n"
+        f"*Keterangan:* {item['keterangan'] or '-'}\n"
+        f"*Ringkasan:* {item['ringkasan']}\n"
+        f"*Tanggal:* {tanggal}"
+    )
+    await query.edit_message_text(
+        text=teks,
+        parse_mode='Markdown',
+        reply_markup=HASIL_KEYBOARD,
+    )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -791,6 +932,10 @@ async def _error_handler(update, context):
 
 
 def main():
+    # Inisialisasi database riwayat saat startup (Fase 4).
+    db_path = init_db()
+    print(f"Database riwayat siap: {db_path}")
+
     app = Application.builder().token(TOKEN).build()
 
     # ------------------------------------------------ Wizard PPh 21 Bulanan

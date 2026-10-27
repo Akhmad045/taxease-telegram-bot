@@ -17,6 +17,12 @@ env/
 # File sementara PDF
 tmp/
 
+# Database lokal
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
 # Log
 *.log
 
