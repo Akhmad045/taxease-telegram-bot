@@ -40,15 +40,21 @@ def hitung_pph_setahun(pkp):
     return pajak
 
 
-def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp):
+def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp,
+                         tunjangan_tidak_tetap=0, nama=None, nik=None,
+                         status_pegawai=None):
     """Menghitung PPh 21 bulanan untuk pegawai.
 
     Args:
         gaji: Gaji pokok per bulan.
-        tunjangan: Tunjangan per bulan.
+        tunjangan: Tunjangan tetap per bulan.
         bpjs: Potongan BPJS per bulan.
         jht: Potongan JHT per bulan.
         ptkp: Status PTKP (mis. "TK/0", "K/1").
+        tunjangan_tidak_tetap: Tunjangan tidak tetap per bulan (masuk bruto).
+        nama: Nama karyawan (opsional, untuk laporan).
+        nik: NIK 16 digit (opsional, untuk laporan).
+        status_pegawai: "Tetap" / "Tidak Tetap" (opsional, untuk laporan).
 
     Returns:
         dict berisi rincian perhitungan.
@@ -62,7 +68,7 @@ def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp):
 
     nilai_ptkp = PTKP_MAP[status]
 
-    bruto_bulanan = gaji + tunjangan
+    bruto_bulanan = gaji + tunjangan + tunjangan_tidak_tetap
     neto_bulanan = bruto_bulanan - bpjs - jht
     neto_setahun = neto_bulanan * 12
 
@@ -77,6 +83,14 @@ def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp):
     thp = neto_bulanan - pph_bulanan
 
     return {
+        "nama": nama,
+        "nik": nik,
+        "status_pegawai": status_pegawai,
+        "gaji_pokok": gaji,
+        "tunjangan": tunjangan,
+        "tunjangan_tidak_tetap": tunjangan_tidak_tetap,
+        "bpjs": bpjs,
+        "jht": jht,
         "bruto_bulanan": bruto_bulanan,
         "neto_bulanan": neto_bulanan,
         "neto_setahun": neto_setahun,
@@ -89,29 +103,37 @@ def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp):
     }
 
 
-def hitung_pph_badan(omzet, biaya, kredit_pph25=0, kredit_pph22_23=0):
+def hitung_pph_badan(omzet, biaya, kredit_pph25=0, kredit_pph22_23=0,
+                     peredaran_lainnya=0, nama=None, npwp=None):
     """Menghitung PPh Badan.
 
     Args:
-        omzet: Peredaran bruto setahun.
+        omzet: Peredaran bruto usaha setahun.
         biaya: Biaya/biaya yang dapat dikurangkan setahun.
         kredit_pph25: Kredit pajak PPh Pasal 25.
         kredit_pph22_23: Kredit pajak PPh Pasal 22/23.
+        peredaran_lainnya: Peredaran bruto lainnya (menambah total bruto).
+        nama: Nama wajib pajak badan (opsional, untuk laporan).
+        npwp: NPWP badan (opsional, untuk laporan).
 
     Returns:
         dict berisi rincian perhitungan.
     """
-    laba = omzet - biaya
+    # Peredaran bruto lainnya menambah total peredaran bruto.
+    total_bruto = omzet + peredaran_lainnya
+    laba = total_bruto - biaya
 
     fasilitas = 0.0
     non_fasilitas = 0.0
     pkp_fasilitas = 0.0
+    skema = ""
 
-    if omzet <= 4_800_000_000:
+    # Penggunaan tarif mengikuti total peredaran bruto.
+    if total_bruto <= 4_800_000_000:
         pph_terutang = laba * 0.11
         skema = "PPh Final/UMKM 11% (Omzet <= 4,8M)"
-    elif omzet <= 50_000_000_000:
-        rasio = 4_800_000_000 / omzet
+    elif total_bruto <= 50_000_000_000:
+        rasio = 4_800_000_000 / total_bruto
         pkp_fasilitas = rasio * laba
         laba_non_fasilitas = laba - pkp_fasilitas
         fasilitas = pkp_fasilitas * 0.11
@@ -126,7 +148,11 @@ def hitung_pph_badan(omzet, biaya, kredit_pph25=0, kredit_pph22_23=0):
     pph_29 = pph_terutang - total_kredit
 
     return {
+        "nama": nama,
+        "npwp": npwp,
         "omzet": omzet,
+        "peredaran_lainnya": peredaran_lainnya,
+        "total_bruto": total_bruto,
         "biaya": biaya,
         "laba": laba,
         "skema": skema,
@@ -134,6 +160,8 @@ def hitung_pph_badan(omzet, biaya, kredit_pph25=0, kredit_pph22_23=0):
         "fasilitas": fasilitas,
         "non_fasilitas": non_fasilitas,
         "pph_terutang": pph_terutang,
+        "kredit_pph25": kredit_pph25,
+        "kredit_pph22_23": kredit_pph22_23,
         "total_kredit": total_kredit,
         "pph_29": pph_29,
     }
@@ -144,7 +172,9 @@ BIAYA_JABATAN_PERSEN = 0.05
 BIAYA_JABATAN_MAKS = 6_000_000
 
 
-def hitung_pph21_tahunan(bruto_setahun, bpjs_setahun, jht_setahun, pph_dipotong_setahun, ptkp):
+def hitung_pph21_tahunan(bruto_setahun, bpjs_setahun, jht_setahun, pph_dipotong_setahun, ptkp,
+                         jkk_setahun=0, jkm_setahun=0, thr_setahun=0, bonus_setahun=0,
+                         nama=None, npwp=None):
     """Menghitung PPh 21 Tahunan (SPT Tahunan Orang Pribadi).
 
     Args:
@@ -153,6 +183,12 @@ def hitung_pph21_tahunan(bruto_setahun, bpjs_setahun, jht_setahun, pph_dipotong_
         jht_setahun: Potongan JHT setahun.
         pph_dipotong_setahun: PPh 21 yang sudah dipotong setahun.
         ptkp: Status PTKP (mis. "TK/0", "K/1").
+        jkk_setahun: Iuran JKK setahun (pengurang).
+        jkm_setahun: Iuran JKM setahun (pengurang).
+        thr_setahun: Total THR setahun (menambah bruto).
+        bonus_setahun: Total bonus setahun (menambah bruto).
+        nama: Nama pegawai (opsional, untuk laporan).
+        npwp: NPWP pegawai (opsional, untuk laporan).
 
     Returns:
         dict berisi rincian perhitungan.
@@ -166,12 +202,17 @@ def hitung_pph21_tahunan(bruto_setahun, bpjs_setahun, jht_setahun, pph_dipotong_
 
     nilai_ptkp = PTKP_MAP[status]
 
+    # THR dan bonus menambah penghasilan bruto.
+    bruto_total = bruto_setahun + thr_setahun + bonus_setahun
+
     # Biaya jabatan: 5% dari bruto, maksimal Rp 6.000.000 setahun.
-    biaya_jabatan = bruto_setahun * BIAYA_JABATAN_PERSEN
+    biaya_jabatan = bruto_total * BIAYA_JABATAN_PERSEN
     if biaya_jabatan > BIAYA_JABATAN_MAKS:
         biaya_jabatan = BIAYA_JABATAN_MAKS
 
-    neto_setahun = bruto_setahun - biaya_jabatan - bpjs_setahun - jht_setahun
+    # BPJS, JHT, JKK, dan JKM merupakan pengurang.
+    total_pengurang = bpjs_setahun + jht_setahun + jkk_setahun + jkm_setahun
+    neto_setahun = bruto_total - biaya_jabatan - total_pengurang
 
     pkp = neto_setahun - nilai_ptkp
     if pkp < 0:
@@ -196,10 +237,18 @@ def hitung_pph21_tahunan(bruto_setahun, bpjs_setahun, jht_setahun, pph_dipotong_
         pph_28a = 0.0
 
     return {
+        "nama": nama,
+        "npwp": npwp,
         "bruto_setahun": bruto_setahun,
+        "thr_setahun": thr_setahun,
+        "bonus_setahun": bonus_setahun,
+        "bruto_total": bruto_total,
         "biaya_jabatan": biaya_jabatan,
         "bpjs_setahun": bpjs_setahun,
         "jht_setahun": jht_setahun,
+        "jkk_setahun": jkk_setahun,
+        "jkm_setahun": jkm_setahun,
+        "total_pengurang": total_pengurang,
         "neto_setahun": neto_setahun,
         "ptkp": status,
         "nilai_ptkp": nilai_ptkp,

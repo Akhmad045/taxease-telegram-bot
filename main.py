@@ -19,20 +19,34 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # ---------------------------------------------------------------- State Wizard
 (
+    BUL_NAMA,
+    BUL_NIK,
     BUL_GAJI,
     BUL_TUNJANGAN,
+    BUL_TUNJANGAN_TIDAK_TETAP,
     BUL_BPJS,
     BUL_JHT,
+    BUL_STATUS_PEGAWAI,
     BUL_PTKP,
+    TAH_NAMA,
+    TAH_NPWP,
     TAH_BRUTO,
+    TAH_JKK,
+    TAH_JKM,
+    TAH_THR,
+    TAH_BONUS,
     TAH_BPJS,
     TAH_JHT,
     TAH_PPH_DIPOTONG,
     TAH_PTKP,
+    BADAN_NAMA,
+    BADAN_NPWP,
     BADAN_OMZET,
+    BADAN_PEREDARAN_LAINNYA,
     BADAN_BIAYA,
-    BADAN_KREDIT,
-) = range(13)
+    BADAN_KREDIT_PPH25,
+    BADAN_KREDIT_PPH22_23,
+) = range(27)
 
 PTKP_LIST = "TK/0, TK/1, TK/2, TK/3, K/0, K/1, K/2, K/3"
 
@@ -56,6 +70,12 @@ PTKP_KEYBOARD = InlineKeyboardMarkup([
     ],
 ])
 
+# Tombol Status Pegawai (PPh 21 Bulanan).
+STATUS_PEGAWAI_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("Tetap", callback_data='pegawai_Tetap')],
+    [InlineKeyboardButton("Tidak Tetap", callback_data='pegawai_Tidak Tetap')],
+])
+
 HASIL_KEYBOARD = InlineKeyboardMarkup([
     [InlineKeyboardButton("Download PDF 📄", callback_data='download_pdf')],
     [InlineKeyboardButton("Kembali ke Menu 🏠", callback_data='menu_utama')],
@@ -70,10 +90,15 @@ BANTUAN_TEKS = (
     "Ketik /start untuk memulai, pilih modul, lalu ikuti langkah pengisian data.\n"
     "Bot akan meminta data satu per satu.\n\n"
     "*Modul tersedia:*\n"
-    "• PPh 21 Bulanan — Gaji → Tunjangan → BPJS → JHT → PTKP\n"
-    "• PPh 21 Tahunan — Bruto → BPJS → JHT → PPh Dipotong → PTKP\n"
-    "• PPh Badan — Omzet → Biaya → Kredit PPh 25\n\n"
-    f"*Status PTKP:* {PTKP_LIST}\n\n"
+    "• PPh 21 Bulanan — Nama → NIK → Gaji → Tunjangan → Tunj. Tidak Tetap → "
+    "BPJS → JHT → Status Pegawai → PTKP\n"
+    "• PPh 21 Tahunan — Nama → NPWP → Bruto → JKK → JKM → THR → Bonus → "
+    "BPJS → JHT → PPh Dipotong → PTKP\n"
+    "• PPh Badan — Nama → NPWP → Omzet → Peredaran Lainnya → Biaya → "
+    "Kredit PPh 25 → Kredit PPh 22/23\n\n"
+    f"*Status PTKP:* {PTKP_LIST}\n"
+    "*Status Pegawai:* Tetap / Tidak Tetap\n"
+    "*NIK:* wajib 16 digit angka\n\n"
     "*Perintah lain:*\n"
     "/start — menu utama\n"
     "/help — bantuan ini\n"
@@ -81,11 +106,13 @@ BANTUAN_TEKS = (
     "/cancel — batalkan pengisian yang sedang berjalan"
 )
 
-# Field wajib untuk validasi tombol PTKP pada state tertentu.
-_PTKP_STATE = {
-    BUL_PTKP: 'bulanan',
-    TAH_PTKP: 'tahunan',
-}
+# Kunci data wizard untuk dibersihkan setelah hasil dikirim / dibatalkan.
+_WIZARD_KEYS = (
+    'nama', 'nik', 'npwp', 'gaji', 'tunjangan', 'tunjangan_tidak_tetap',
+    'bpjs', 'jht', 'status_pegawai', 'bruto', 'jkk', 'jkm', 'thr', 'bonus',
+    'pph_dipotong', 'omzet', 'peredaran_lainnya', 'biaya', 'kredit_pph25',
+    'kredit_pph22_23', 'ptkp',
+)
 
 
 # ------------------------------------------------------------------- Utilities
@@ -117,6 +144,18 @@ def _parse_angka(teks):
     return nilai
 
 
+def _parse_nik(teks):
+    """Validasi NIK: harus tepat 16 digit angka. Raise ValueError bila tidak."""
+    bersih = str(teks or "").strip().replace(" ", "").replace(".", "").replace("-", "")
+    if bersih == "":
+        raise ValueError("kosong")
+    if not bersih.isdigit():
+        raise ValueError(f"bukan angka: {teks}")
+    if len(bersih) != 16:
+        raise ValueError(f"NIK harus 16 digit, Anda memasukkan {len(bersih)} digit")
+    return bersih
+
+
 async def _tanya(update, teks, keyboard=None):
     """Mengirim pertanyaan wizard ke pesan yang sedang aktif."""
     await update.effective_message.reply_text(
@@ -124,11 +163,13 @@ async def _tanya(update, teks, keyboard=None):
     )
 
 
-async def _tolak_input(update, state):
+async def _tolak_input(update, state, pesan=None):
     """Memberi tahu input tidak valid lalu mengulang state saat ini."""
     await update.effective_message.reply_text(
-        "⚠️ *Input tidak valid. Masukkan hanya angka.*\n"
-        "Ketik /cancel untuk membatalkan.",
+        pesan or (
+            "⚠️ *Input tidak valid. Masukkan hanya angka.*\n"
+            "Ketik /cancel untuk membatalkan."
+        ),
         parse_mode='Markdown',
     )
     return state
@@ -146,12 +187,52 @@ async def _simpan_angka(update, context, key, state, pertanyaan_berikut, keyboar
     return state + 1
 
 
+async def _simpan_teks(update, context, key, state, pertanyaan_berikut, keyboard=None):
+    """Simpan input teks bebas (mis. nama) lalu lanjut ke state berikutnya."""
+    nilai = str(update.message.text or "").strip()
+    if nilai == "":
+        return await _tolak_input(
+            update, state,
+            "⚠️ *Input tidak boleh kosong.*\nCoba lagi atau ketik /cancel untuk membatalkan.",
+        )
+    context.user_data[key] = nilai
+    await _tanya(update, pertanyaan_berikut, keyboard=keyboard)
+    return state + 1
+
+
+async def _simpan_nik(update, context, state, pertanyaan_berikut, keyboard=None):
+    """Validasi NIK 16 digit, simpan, lalu lanjut atau ulangi state."""
+    try:
+        nik = _parse_nik(update.message.text)
+    except ValueError as e:
+        return await _tolak_input(
+            update, state,
+            "⚠️ *NIK tidak valid.*\n"
+            f"{e}.\n"
+            "Masukkan NIK tepat 16 digit angka.\n"
+            "Ketik /cancel untuk membatalkan.",
+        )
+    context.user_data['nik'] = nik
+    await _tanya(update, pertanyaan_berikut, keyboard=keyboard)
+    return state + 1
+
+
 async def _ingatkan_klik_ptkp(update, state):
     """Dipakai saat user mengetik teks pada state PTKP, bukan mengklik tombol."""
     await update.effective_message.reply_text(
         "⚠️ Silakan klik salah satu tombol Status PTKP yang tersedia di atas.",
         parse_mode='Markdown',
         reply_markup=PTKP_KEYBOARD,
+    )
+    return state
+
+
+async def _ingatkan_klik_status(update, state):
+    """Dipakai saat user mengetik teks pada state Status Pegawai."""
+    await update.effective_message.reply_text(
+        "⚠️ Silakan klik salah satu tombol Status Pegawai yang tersedia di atas.",
+        parse_mode='Markdown',
+        reply_markup=STATUS_PEGAWAI_KEYBOARD,
     )
     return state
 
@@ -186,8 +267,7 @@ async def _kirim_hasil(update, context, jenis, hasil, teks_hasil):
         reply_markup=HASIL_KEYBOARD,
     )
     # Bersihkan data wizard yang sudah tidak dipakai.
-    for key in ('gaji', 'tunjangan', 'bpjs', 'jht', 'bruto',
-                'pph_dipotong', 'omzet', 'biaya', 'kredit_pph25', 'ptkp'):
+    for key in _WIZARD_KEYS:
         context.user_data.pop(key, None)
     return ConversationHandler.END
 
@@ -285,8 +365,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mengakhiri wizard kapan saja dan mengembalikan ke menu awal."""
     context.user_data.pop('last_result', None)
-    for key in ('gaji', 'tunjangan', 'bpjs', 'jht', 'bruto',
-                'pph_dipotong', 'omzet', 'biaya', 'kredit_pph25', 'ptkp'):
+    for key in _WIZARD_KEYS:
         context.user_data.pop(key, None)
 
     await update.effective_message.reply_text(
@@ -303,41 +382,86 @@ async def pph21_bulanan_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     await query.edit_message_text(
         text=(
-            "*PPh 21 Bulanan — Langkah 1/5*\n\n"
-            "Masukkan Gaji Pokok (hanya angka):"
+            "*PPh 21 Bulanan — Langkah 1/9*\n\n"
+            "Masukkan Nama Karyawan:"
         ),
         parse_mode='Markdown',
     )
-    return BUL_GAJI
+    return BUL_NAMA
+
+
+async def bul_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_teks(
+        update, context, 'nama', BUL_NAMA,
+        "*PPh 21 Bulanan — Langkah 2/9*\n\n"
+        "Masukkan NIK (16 digit angka):",
+    )
+
+
+async def bul_nik(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_nik(
+        update, context, BUL_NIK,
+        "*PPh 21 Bulanan — Langkah 3/9*\n\nMasukkan Gaji Pokok:",
+    )
 
 
 async def bul_gaji(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'gaji', BUL_GAJI,
-        "*PPh 21 Bulanan — Langkah 2/5*\n\nMasukkan Tunjangan Tetap:",
+        "*PPh 21 Bulanan — Langkah 4/9*\n\nMasukkan Tunjangan Tetap:",
     )
 
 
 async def bul_tunjangan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'tunjangan', BUL_TUNJANGAN,
-        "*PPh 21 Bulanan — Langkah 3/5*\n\nMasukkan Iuran BPJS:",
+        "*PPh 21 Bulanan — Langkah 5/9*\n\nMasukkan Tunjangan Tidak Tetap:",
+    )
+
+
+async def bul_tunjangan_tidak_tetap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_angka(
+        update, context, 'tunjangan_tidak_tetap', BUL_TUNJANGAN_TIDAK_TETAP,
+        "*PPh 21 Bulanan — Langkah 6/9*\n\nMasukkan Iuran BPJS:",
     )
 
 
 async def bul_bpjs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'bpjs', BUL_BPJS,
-        "*PPh 21 Bulanan — Langkah 4/5*\n\nMasukkan Iuran JHT:",
+        "*PPh 21 Bulanan — Langkah 7/9*\n\nMasukkan Iuran JHT:",
     )
 
 
 async def bul_jht(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'jht', BUL_JHT,
-        "*PPh 21 Bulanan — Langkah 5/5*\n\nPilih Status PTKP:",
-        keyboard=PTKP_KEYBOARD,
+        "*PPh 21 Bulanan — Langkah 8/9*\n\nPilih Status Pegawai:",
+        keyboard=STATUS_PEGAWAI_KEYBOARD,
     )
+
+
+async def bul_status_pegawai_teks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _ingatkan_klik_status(update, BUL_STATUS_PEGAWAI)
+
+
+async def bul_status_pegawai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dipicu saat tombol Status Pegawai diklik; lanjut ke pertanyaan PTKP."""
+    query = update.callback_query
+    await query.answer()
+
+    status_pegawai = query.data.replace('pegawai_', '', 1)
+    context.user_data['status_pegawai'] = status_pegawai
+
+    await query.edit_message_text(
+        text=(
+            f"Status Pegawai: *{status_pegawai}*\n\n"
+            "*PPh 21 Bulanan — Langkah 9/9*\n\nPilih Status PTKP:"
+        ),
+        parse_mode='Markdown',
+        reply_markup=PTKP_KEYBOARD,
+    )
+    return BUL_PTKP
 
 
 async def bul_ptkp_teks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -350,13 +474,22 @@ async def bul_proses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     ptkp = query.data.replace('ptkp_', '', 1)
-    gaji = context.user_data.get('gaji', 0)
-    tunjangan = context.user_data.get('tunjangan', 0)
-    bpjs = context.user_data.get('bpjs', 0)
-    jht = context.user_data.get('jht', 0)
+    d = context.user_data
+    nama = d.get('nama')
+    nik = d.get('nik')
+    status_pegawai = d.get('status_pegawai')
+    gaji = d.get('gaji', 0)
+    tunjangan = d.get('tunjangan', 0)
+    tunjangan_tidak_tetap = d.get('tunjangan_tidak_tetap', 0)
+    bpjs = d.get('bpjs', 0)
+    jht = d.get('jht', 0)
 
     try:
-        hasil = hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp)
+        hasil = hitung_pph21_bulanan(
+            gaji, tunjangan, bpjs, jht, ptkp,
+            tunjangan_tidak_tetap=tunjangan_tidak_tetap,
+            nama=nama, nik=nik, status_pegawai=status_pegawai,
+        )
     except ValueError as e:
         await query.message.reply_text(f"⚠️ {e}\n\nKetik /cancel untuk membatalkan.")
         return BUL_PTKP
@@ -364,9 +497,16 @@ async def bul_proses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     teks_hasil = (
         "*📊 Hasil Perhitungan PPh 21 Bulanan*\n"
         "──────────────────────────\n"
+        f"*Nama Karyawan:* {nama}\n"
+        f"*NIK:* {nik}\n"
+        f"*Status Pegawai:* {status_pegawai}\n"
+        "──────────────────────────\n"
         f"*Gaji Pokok:* {_rupiah(gaji)}\n"
-        f"*Tunjangan:* {_rupiah(tunjangan)}\n"
+        f"*Tunjangan Tetap:* {_rupiah(tunjangan)}\n"
+        f"*Tunjangan Tidak Tetap:* {_rupiah(tunjangan_tidak_tetap)}\n"
         f"*Bruto Bulanan:* {_rupiah(hasil['bruto_bulanan'])}\n"
+        f"*BPJS:* {_rupiah(bpjs)}\n"
+        f"*JHT:* {_rupiah(jht)}\n"
         f"*Neto Bulanan:* {_rupiah(hasil['neto_bulanan'])}\n"
         f"*Neto Setahun:* {_rupiah(hasil['neto_setahun'])}\n"
         f"*PTKP ({hasil['ptkp']}):* {_rupiah(hasil['nilai_ptkp'])}\n"
@@ -387,32 +527,74 @@ async def pph21_tahunan_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     await query.edit_message_text(
         text=(
-            "*PPh 21 Tahunan — Langkah 1/5*\n\n"
-            "Masukkan Total Bruto Setahun (hanya angka):"
+            "*PPh 21 Tahunan — Langkah 1/10*\n\n"
+            "Masukkan Nama Pegawai:"
         ),
         parse_mode='Markdown',
     )
-    return TAH_BRUTO
+    return TAH_NAMA
+
+
+async def tah_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_teks(
+        update, context, 'nama', TAH_NAMA,
+        "*PPh 21 Tahunan — Langkah 2/10*\n\nMasukkan NPWP:",
+    )
+
+
+async def tah_npwp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_teks(
+        update, context, 'npwp', TAH_NPWP,
+        "*PPh 21 Tahunan — Langkah 3/10*\n\nMasukkan Total Bruto Setahun:",
+    )
 
 
 async def tah_bruto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'bruto', TAH_BRUTO,
-        "*PPh 21 Tahunan — Langkah 2/5*\n\nMasukkan Total BPJS Setahun:",
+        "*PPh 21 Tahunan — Langkah 4/10*\n\nMasukkan Total JKK Setahun:",
+    )
+
+
+async def tah_jkk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_angka(
+        update, context, 'jkk', TAH_JKK,
+        "*PPh 21 Tahunan — Langkah 5/10*\n\nMasukkan Total JKM Setahun:",
+    )
+
+
+async def tah_jkm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_angka(
+        update, context, 'jkm', TAH_JKM,
+        "*PPh 21 Tahunan — Langkah 6/10*\n\nMasukkan Total THR Setahun:",
+    )
+
+
+async def tah_thr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_angka(
+        update, context, 'thr', TAH_THR,
+        "*PPh 21 Tahunan — Langkah 7/10*\n\nMasukkan Total Bonus Setahun:",
+    )
+
+
+async def tah_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_angka(
+        update, context, 'bonus', TAH_BONUS,
+        "*PPh 21 Tahunan — Langkah 8/10*\n\nMasukkan Total BPJS Setahun:",
     )
 
 
 async def tah_bpjs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'bpjs', TAH_BPJS,
-        "*PPh 21 Tahunan — Langkah 3/5*\n\nMasukkan Total JHT Setahun:",
+        "*PPh 21 Tahunan — Langkah 9/10*\n\nMasukkan Total JHT Setahun:",
     )
 
 
 async def tah_jht(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'jht', TAH_JHT,
-        "*PPh 21 Tahunan — Langkah 4/5*\n\n"
+        "*PPh 21 Tahunan — Langkah 10/10*\n\n"
         "Masukkan Total PPh 21 Dipotong Setahun:",
     )
 
@@ -420,7 +602,7 @@ async def tah_jht(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tah_pph_dipotong(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'pph_dipotong', TAH_PPH_DIPOTONG,
-        "*PPh 21 Tahunan — Langkah 5/5*\n\nPilih Status PTKP:",
+        "*PPh 21 Tahunan*\n\nPilih Status PTKP:",
         keyboard=PTKP_KEYBOARD,
     )
 
@@ -435,13 +617,25 @@ async def tah_proses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     ptkp = query.data.replace('ptkp_', '', 1)
-    bruto = context.user_data.get('bruto', 0)
-    bpjs = context.user_data.get('bpjs', 0)
-    jht = context.user_data.get('jht', 0)
-    pph_dipotong = context.user_data.get('pph_dipotong', 0)
+    d = context.user_data
+    nama = d.get('nama')
+    npwp = d.get('npwp')
+    bruto = d.get('bruto', 0)
+    jkk = d.get('jkk', 0)
+    jkm = d.get('jkm', 0)
+    thr = d.get('thr', 0)
+    bonus = d.get('bonus', 0)
+    bpjs = d.get('bpjs', 0)
+    jht = d.get('jht', 0)
+    pph_dipotong = d.get('pph_dipotong', 0)
 
     try:
-        hasil = hitung_pph21_tahunan(bruto, bpjs, jht, pph_dipotong, ptkp)
+        hasil = hitung_pph21_tahunan(
+            bruto, bpjs, jht, pph_dipotong, ptkp,
+            jkk_setahun=jkk, jkm_setahun=jkm,
+            thr_setahun=thr, bonus_setahun=bonus,
+            nama=nama, npwp=npwp,
+        )
     except ValueError as e:
         await query.message.reply_text(f"⚠️ {e}\n\nKetik /cancel untuk membatalkan.")
         return TAH_PTKP
@@ -456,10 +650,19 @@ async def tah_proses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     teks_hasil = (
         "*📊 Hasil Perhitungan PPh 21 Tahunan*\n"
         "──────────────────────────\n"
-        f"*Bruto Setahun:* {_rupiah(hasil['bruto_setahun'])}\n"
+        f"*Nama Pegawai:* {nama}\n"
+        f"*NPWP:* {npwp}\n"
+        "──────────────────────────\n"
+        f"*Bruto Setahun:* {_rupiah(bruto)}\n"
+        f"*THR Setahun:* {_rupiah(thr)}\n"
+        f"*Bonus Setahun:* {_rupiah(bonus)}\n"
+        f"*Bruto Total:* {_rupiah(hasil['bruto_total'])}\n"
         f"*Biaya Jabatan:* {_rupiah(hasil['biaya_jabatan'])}\n"
-        f"*BPJS Setahun:* {_rupiah(hasil['bpjs_setahun'])}\n"
-        f"*JHT Setahun:* {_rupiah(hasil['jht_setahun'])}\n"
+        f"*BPJS Setahun:* {_rupiah(bpjs)}\n"
+        f"*JHT Setahun:* {_rupiah(jht)}\n"
+        f"*JKK Setahun:* {_rupiah(jkk)}\n"
+        f"*JKM Setahun:* {_rupiah(jkm)}\n"
+        f"*Total Pengurang:* {_rupiah(hasil['total_pengurang'])}\n"
         f"*Neto Setahun:* {_rupiah(hasil['neto_setahun'])}\n"
         f"*PTKP ({hasil['ptkp']}):* {_rupiah(hasil['nilai_ptkp'])}\n"
         f"*PKP Setahun:* {_rupiah(hasil['pkp'])}\n"
@@ -479,39 +682,75 @@ async def pph_badan_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await query.edit_message_text(
         text=(
-            "*PPh Badan — Langkah 1/3*\n\n"
-            "Masukkan Peredaran Bruto / Omzet (hanya angka):"
+            "*PPh Badan — Langkah 1/7*\n\n"
+            "Masukkan Nama Wajib Pajak:"
         ),
         parse_mode='Markdown',
     )
-    return BADAN_OMZET
+    return BADAN_NAMA
+
+
+async def badan_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_teks(
+        update, context, 'nama', BADAN_NAMA,
+        "*PPh Badan — Langkah 2/7*\n\nMasukkan NPWP Badan:",
+    )
+
+
+async def badan_npwp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_teks(
+        update, context, 'npwp', BADAN_NPWP,
+        "*PPh Badan — Langkah 3/7*\n\nMasukkan Peredaran Bruto Usaha (Omzet):",
+    )
 
 
 async def badan_omzet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'omzet', BADAN_OMZET,
-        "*PPh Badan — Langkah 2/3*\n\nMasukkan Biaya / Beban Usaha:",
+        "*PPh Badan — Langkah 4/7*\n\nMasukkan Peredaran Bruto Lainnya:",
+    )
+
+
+async def badan_peredaran_lainnya(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_angka(
+        update, context, 'peredaran_lainnya', BADAN_PEREDARAN_LAINNYA,
+        "*PPh Badan — Langkah 5/7*\n\nMasukkan Biaya / Beban Usaha:",
     )
 
 
 async def badan_biaya(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _simpan_angka(
         update, context, 'biaya', BADAN_BIAYA,
-        "*PPh Badan — Langkah 3/3*\n\n"
-        "Masukkan Kredit Pajak PPh 25 (jika tidak ada, ketik 0):",
+        "*PPh Badan — Langkah 6/7*\n\nMasukkan Kredit Pajak PPh 25:",
     )
 
 
-async def badan_kredit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        kredit_pph25 = _parse_angka(update.message.text)
-    except ValueError:
-        return await _tolak_input(update, BADAN_KREDIT)
+async def badan_kredit_pph25(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _simpan_angka(
+        update, context, 'kredit_pph25', BADAN_KREDIT_PPH25,
+        "*PPh Badan — Langkah 7/7*\n\nMasukkan Kredit Pajak PPh 22/23:",
+    )
 
-    context.user_data['kredit_pph25'] = kredit_pph25
-    omzet = context.user_data.get('omzet', 0)
-    biaya = context.user_data.get('biaya', 0)
-    hasil = hitung_pph_badan(omzet, biaya, kredit_pph25)
+
+async def badan_kredit_pph22_23(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        kredit_pph22_23 = _parse_angka(update.message.text)
+    except ValueError:
+        return await _tolak_input(update, BADAN_KREDIT_PPH22_23)
+
+    context.user_data['kredit_pph22_23'] = kredit_pph22_23
+    d = context.user_data
+    nama = d.get('nama')
+    npwp = d.get('npwp')
+    omzet = d.get('omzet', 0)
+    peredaran_lainnya = d.get('peredaran_lainnya', 0)
+    biaya = d.get('biaya', 0)
+    kredit_pph25 = d.get('kredit_pph25', 0)
+
+    hasil = hitung_pph_badan(
+        omzet, biaya, kredit_pph25, kredit_pph22_23,
+        peredaran_lainnya=peredaran_lainnya, nama=nama, npwp=npwp,
+    )
 
     baris_fasilitas = ""
     if hasil["pkp_fasilitas"]:
@@ -524,13 +763,20 @@ async def badan_kredit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     teks_hasil = (
         "*📊 Hasil Perhitungan PPh Badan*\n"
         "──────────────────────────\n"
-        f"*Omzet:* {_rupiah(hasil['omzet'])}\n"
+        f"*Nama Wajib Pajak:* {nama}\n"
+        f"*NPWP:* {npwp}\n"
+        "──────────────────────────\n"
+        f"*Peredaran Bruto Usaha:* {_rupiah(omzet)}\n"
+        f"*Peredaran Bruto Lainnya:* {_rupiah(peredaran_lainnya)}\n"
+        f"*Total Peredaran Bruto:* {_rupiah(hasil['total_bruto'])}\n"
         f"*Biaya:* {_rupiah(hasil['biaya'])}\n"
         f"*Laba:* {_rupiah(hasil['laba'])}\n"
         f"*Skema:* {hasil['skema']}\n"
         "──────────────────────────\n"
         f"{baris_fasilitas}"
         f"*PPh Terutang:* {_rupiah(hasil['pph_terutang'])}\n"
+        f"*Kredit PPh 25:* {_rupiah(kredit_pph25)}\n"
+        f"*Kredit PPh 22/23:* {_rupiah(kredit_pph22_23)}\n"
         f"*Total Kredit Pajak:* {_rupiah(hasil['total_kredit'])}\n"
         "──────────────────────────\n"
         f"*PPh 29 (Kurang/Lebih Bayar):* {_rupiah(hasil['pph_29'])}"
@@ -553,10 +799,19 @@ def main():
             CallbackQueryHandler(pph21_bulanan_start, pattern='^pph21_bulanan$'),
         ],
         states={
+            BUL_NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, bul_nama)],
+            BUL_NIK: [MessageHandler(filters.TEXT & ~filters.COMMAND, bul_nik)],
             BUL_GAJI: [MessageHandler(filters.TEXT & ~filters.COMMAND, bul_gaji)],
             BUL_TUNJANGAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, bul_tunjangan)],
+            BUL_TUNJANGAN_TIDAK_TETAP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bul_tunjangan_tidak_tetap)
+            ],
             BUL_BPJS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bul_bpjs)],
             BUL_JHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bul_jht)],
+            BUL_STATUS_PEGAWAI: [
+                CallbackQueryHandler(bul_status_pegawai, pattern='^pegawai_'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bul_status_pegawai_teks),
+            ],
             BUL_PTKP: [
                 CallbackQueryHandler(bul_proses, pattern='^ptkp_'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bul_ptkp_teks),
@@ -575,7 +830,13 @@ def main():
             CallbackQueryHandler(pph21_tahunan_start, pattern='^pph21_tahunan$'),
         ],
         states={
+            TAH_NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_nama)],
+            TAH_NPWP: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_npwp)],
             TAH_BRUTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_bruto)],
+            TAH_JKK: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_jkk)],
+            TAH_JKM: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_jkm)],
+            TAH_THR: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_thr)],
+            TAH_BONUS: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_bonus)],
             TAH_BPJS: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_bpjs)],
             TAH_JHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, tah_jht)],
             TAH_PPH_DIPOTONG: [
@@ -599,9 +860,19 @@ def main():
             CallbackQueryHandler(pph_badan_start, pattern='^pph_badan$'),
         ],
         states={
+            BADAN_NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, badan_nama)],
+            BADAN_NPWP: [MessageHandler(filters.TEXT & ~filters.COMMAND, badan_npwp)],
             BADAN_OMZET: [MessageHandler(filters.TEXT & ~filters.COMMAND, badan_omzet)],
+            BADAN_PEREDARAN_LAINNYA: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, badan_peredaran_lainnya)
+            ],
             BADAN_BIAYA: [MessageHandler(filters.TEXT & ~filters.COMMAND, badan_biaya)],
-            BADAN_KREDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, badan_kredit)],
+            BADAN_KREDIT_PPH25: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, badan_kredit_pph25)
+            ],
+            BADAN_KREDIT_PPH22_23: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, badan_kredit_pph22_23)
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),

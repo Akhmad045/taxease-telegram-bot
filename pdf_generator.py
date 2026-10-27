@@ -73,10 +73,20 @@ def _tulis_tabel(pdf, baris):
 
 
 def _baris_pph21_bulanan(data):
-    return [
+    baris = []
+    if data.get("nama"):
+        baris.append(("Nama Karyawan", str(data["nama"])))
+    if data.get("nik"):
+        baris.append(("NIK", str(data["nik"])))
+    if data.get("status_pegawai"):
+        baris.append(("Status Pegawai", str(data["status_pegawai"])))
+    baris += [
         ("Gaji Pokok", _rupiah(data.get("gaji_pokok", data.get("gaji", 0)))),
-        ("Tunjangan", _rupiah(data.get("tunjangan", 0))),
+        ("Tunjangan Tetap", _rupiah(data.get("tunjangan", 0))),
+        ("Tunjangan Tidak Tetap", _rupiah(data.get("tunjangan_tidak_tetap", 0))),
         ("Bruto Bulanan", _rupiah(data.get("bruto_bulanan", 0))),
+        ("BPJS", _rupiah(data.get("bpjs", 0))),
+        ("JHT", _rupiah(data.get("jht", 0))),
         ("Neto Bulanan", _rupiah(data.get("neto_bulanan", 0))),
         ("Neto Setahun", _rupiah(data.get("neto_setahun", 0))),
         (f"PTKP ({data.get('ptkp', '-')})", _rupiah(data.get("nilai_ptkp", 0))),
@@ -85,14 +95,26 @@ def _baris_pph21_bulanan(data):
         ("PPh 21 Sebulan", _rupiah(data.get("pph_bulanan", 0))),
         ("Take Home Pay (THP)", _rupiah(data.get("thp", 0))),
     ]
+    return baris
 
 
 def _baris_pph21_tahunan(data):
-    return [
+    baris = []
+    if data.get("nama"):
+        baris.append(("Nama Pegawai", str(data["nama"])))
+    if data.get("npwp"):
+        baris.append(("NPWP", str(data["npwp"])))
+    baris += [
         ("Bruto Setahun", _rupiah(data.get("bruto_setahun", 0))),
+        ("THR Setahun", _rupiah(data.get("thr_setahun", 0))),
+        ("Bonus Setahun", _rupiah(data.get("bonus_setahun", 0))),
+        ("Bruto Total", _rupiah(data.get("bruto_total", data.get("bruto_setahun", 0)))),
         ("Biaya Jabatan", _rupiah(data.get("biaya_jabatan", 0))),
         ("BPJS Setahun", _rupiah(data.get("bpjs_setahun", 0))),
         ("JHT Setahun", _rupiah(data.get("jht_setahun", 0))),
+        ("JKK Setahun", _rupiah(data.get("jkk_setahun", 0))),
+        ("JKM Setahun", _rupiah(data.get("jkm_setahun", 0))),
+        ("Total Pengurang", _rupiah(data.get("total_pengurang", 0))),
         ("Neto Setahun", _rupiah(data.get("neto_setahun", 0))),
         (f"PTKP ({data.get('ptkp', '-')})", _rupiah(data.get("nilai_ptkp", 0))),
         ("PKP Setahun", _rupiah(data.get("pkp", 0))),
@@ -102,11 +124,19 @@ def _baris_pph21_tahunan(data):
         ("PPh 29 (Kurang Bayar)", _rupiah(data.get("pph_29", 0))),
         ("PPh 28A (Lebih Bayar)", _rupiah(data.get("pph_28a", 0))),
     ]
+    return baris
 
 
 def _baris_pph_badan(data):
-    baris = [
-        ("Omzet", _rupiah(data.get("omzet", 0))),
+    baris = []
+    if data.get("nama"):
+        baris.append(("Nama Wajib Pajak", str(data["nama"])))
+    if data.get("npwp"):
+        baris.append(("NPWP", str(data["npwp"])))
+    baris += [
+        ("Peredaran Bruto Usaha", _rupiah(data.get("omzet", 0))),
+        ("Peredaran Bruto Lainnya", _rupiah(data.get("peredaran_lainnya", 0))),
+        ("Total Peredaran Bruto", _rupiah(data.get("total_bruto", data.get("omzet", 0)))),
         ("Biaya", _rupiah(data.get("biaya", 0))),
         ("Laba", _rupiah(data.get("laba", 0))),
         ("Skema", str(data.get("skema", "-"))),
@@ -119,6 +149,8 @@ def _baris_pph_badan(data):
         ]
     baris += [
         ("PPh Terutang", _rupiah(data.get("pph_terutang", 0))),
+        ("Kredit PPh 25", _rupiah(data.get("kredit_pph25", 0))),
+        ("Kredit PPh 22/23", _rupiah(data.get("kredit_pph22_23", 0))),
         ("Total Kredit Pajak", _rupiah(data.get("total_kredit", 0))),
         ("PPh 29 (Kurang/Lebih Bayar)", _rupiah(data.get("pph_29", 0))),
     ]
