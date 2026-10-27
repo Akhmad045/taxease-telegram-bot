@@ -69,7 +69,10 @@ def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp,
     nilai_ptkp = PTKP_MAP[status]
 
     bruto_bulanan = gaji + tunjangan + tunjangan_tidak_tetap
-    neto_bulanan = bruto_bulanan - bpjs - jht
+    # Biaya jabatan: 5% dari bruto, maksimal Rp 500.000/bulan
+    # (setara batas Rp 6.000.000/tahun pada perhitungan tahunan).
+    biaya_jabatan_bulanan = min(bruto_bulanan * BIAYA_JABATAN_PERSEN, 500_000)
+    neto_bulanan = bruto_bulanan - biaya_jabatan_bulanan - bpjs - jht
     neto_setahun = neto_bulanan * 12
 
     pkp = neto_setahun - nilai_ptkp
@@ -80,7 +83,9 @@ def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp,
 
     pph_setahun = hitung_pph_setahun(pkp)
     pph_bulanan = pph_setahun / 12
-    thp = neto_bulanan - pph_bulanan
+    # THP Kas: bruto − BPJS − JHT − PPh (biaya jabatan tidak mengurangi THP,
+    # hanya mengurangi neto/PKP — konsisten dengan definisi THP di web TaxEase).
+    thp = bruto_bulanan - bpjs - jht - pph_bulanan
 
     return {
         "nama": nama,
@@ -92,6 +97,7 @@ def hitung_pph21_bulanan(gaji, tunjangan, bpjs, jht, ptkp,
         "bpjs": bpjs,
         "jht": jht,
         "bruto_bulanan": bruto_bulanan,
+        "biaya_jabatan": biaya_jabatan_bulanan,
         "neto_bulanan": neto_bulanan,
         "neto_setahun": neto_setahun,
         "ptkp": status,

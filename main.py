@@ -646,6 +646,7 @@ async def bul_proses(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*Tunjangan Tetap:* {_rupiah(tunjangan)}\n"
         f"*Tunjangan Tidak Tetap:* {_rupiah(tunjangan_tidak_tetap)}\n"
         f"*Bruto Bulanan:* {_rupiah(hasil['bruto_bulanan'])}\n"
+        f"*Biaya Jabatan:* {_rupiah(hasil['biaya_jabatan'])}\n"
         f"*BPJS:* {_rupiah(bpjs)}\n"
         f"*JHT:* {_rupiah(jht)}\n"
         f"*Neto Bulanan:* {_rupiah(hasil['neto_bulanan'])}\n"

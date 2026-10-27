@@ -85,6 +85,7 @@ def _baris_pph21_bulanan(data):
         ("Tunjangan Tetap", _rupiah(data.get("tunjangan", 0))),
         ("Tunjangan Tidak Tetap", _rupiah(data.get("tunjangan_tidak_tetap", 0))),
         ("Bruto Bulanan", _rupiah(data.get("bruto_bulanan", 0))),
+        ("Biaya Jabatan", _rupiah(data.get("biaya_jabatan", 0))),
         ("BPJS", _rupiah(data.get("bpjs", 0))),
         ("JHT", _rupiah(data.get("jht", 0))),
         ("Neto Bulanan", _rupiah(data.get("neto_bulanan", 0))),
